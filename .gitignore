@@ -1,0 +1,6 @@
+node_modules/
+debug.log
+*.log
+.dsh-backups/
+.DS_Store
+test/
