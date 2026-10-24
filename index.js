@@ -324,6 +324,7 @@ export function apply(ctx, rawConfig) {
 
     if (decision.risk === 'high' && config.sensitiveConfirmations === 'double') {
       rememberAsk(exec, decision)
+      logger.write({ event: 'ask', rule: 'high-risk-step1', mode, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
       const first = await confirmHighRisk(ctx, exec, decision)
       if (first !== null) {
         logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
