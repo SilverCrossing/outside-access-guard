@@ -1,5 +1,7 @@
 # 工作区外访问守卫（outside-access-guard）
 
+[English](README_EN.md) | 中文
+
 给 DeepSeek Harness 补上「读取工作区之外要经过我」这一层，并把
 [dsh-outsideread-switch](https://www.npmjs.com/package/dsh-outsideread-switch)
 式的二值开关扩成三档模式。
