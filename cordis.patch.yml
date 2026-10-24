@@ -1,0 +1,8 @@
+# Bundle layer: installed rows are inserted into the active profile.
+# The plugin id is stable so a user patch can later override `config`.
+- insert:
+    - id: outside-access-guard
+      name: outside-access-guard
+      config:
+        mode: ask
+        gateShell: true

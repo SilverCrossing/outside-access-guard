@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Outside Access Guard",
+    "description": "Require approval whenever a tool reads outside the session workspace."
+  }
+}
