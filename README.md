@@ -111,7 +111,7 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 {"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","reason":"..."}
 ```
 
-- `event`：`ask` / `deny` / `cancel` / `mode`；
+- `event`：`ask` / `deny` / `cancel` / `mode` / `approval`（审批结果）；
 - 只记录**被判定过**的调用（工作区内的读取不会产生日志）；
 - 写日志失败只告警，不影响拦截；
 - `log: false` 关闭，`logDir` 换目录，`logRetentionDays` 改保留天数。

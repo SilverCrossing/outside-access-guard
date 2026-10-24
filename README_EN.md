@@ -109,7 +109,7 @@ Every decision appends one JSONL line to `$DSH_HOME/logs/outside-access-guard/YY
 {"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","reason":"..."}
 ```
 
-- `event`: `ask` / `deny` / `cancel` / `mode`;
+- `event`: `ask` / `deny` / `cancel` / `mode` / `approval` (the outcome);
 - only calls that were classified are logged (reads inside the workspace produce nothing);
 - a failed write only warns and never affects interception;
 - `log: false` disables it, `logDir` changes the directory, `logRetentionDays` changes retention.

@@ -228,6 +228,33 @@ function registerModeCommand(ctx, config, getMode, setMode) {
 export function apply(ctx, rawConfig) {
   const config = normalizeConfig(rawConfig)
   const logger = createLogger('outside-access-guard', config)
+  const pending = new Map()
+  const MAX_PENDING = 256
+
+  function rememberAsk(exec, decision) {
+    if (exec.callId === undefined) return
+    if (pending.size >= MAX_PENDING) {
+      const oldest = pending.keys().next().value
+      if (oldest !== undefined) pending.delete(oldest)
+    }
+    pending.set(exec.callId, { tool: exec.name, kind: decision.kind ?? 'outside', risk: decision.risk ?? 'normal' })
+  }
+
+  // Observation only: let the normal answerers decide, then record the outcome.
+  ctx.on('approval/request', async (request, next) => {
+    const outcome = await next()
+    try {
+      const known = request.callId !== undefined ? pending.get(request.callId) : undefined
+      if (known !== undefined) {
+        pending.delete(request.callId)
+        logger.write({ event: 'approval', outcome, tool: known.tool, kind: known.kind, risk: known.risk, agent: request.agent?.id })
+      }
+    } catch {
+      // Logging must never change the approval outcome.
+    }
+    return outcome
+  })
+
   let mode = config.mode
   let warnedNoRoots = false
   const boundaries = new Map()
@@ -296,6 +323,7 @@ export function apply(ctx, rawConfig) {
     }
 
     if (decision.risk === 'high' && config.sensitiveConfirmations === 'double') {
+      rememberAsk(exec, decision)
       const first = await confirmHighRisk(ctx, exec, decision)
       if (first !== null) {
         logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
@@ -308,6 +336,7 @@ export function apply(ctx, rawConfig) {
       return { kind: 'cancel' }
     }
 
+    rememberAsk(exec, decision)
     logger.write({ event: 'ask', mode, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
     return {
       kind: 'ask',
