@@ -38,9 +38,10 @@ The mode has two entry points:
 
 An ordinary outside access prompts once (1/1). A path matching a sensitive rule escalates:
 
-1. **Step 1/2**: a separate high-risk alert that names the matched sensitive rule;
-2. **Step 2/2**: only after that does the call's ordinary approval appear;
-3. both must be approved; rejecting or cancelling either step prevents execution.
+1. **Step 1/2**: only opens the final confirmation; nothing runs here;
+2. **Gap**: a mandatory `confirmGapMs` pause (2000 ms by default) between the two dialogs;
+3. **Step 2/2**: the ordinary approval for this call; **the high-risk warning lives here**;
+4. both must be approved; rejecting or cancelling either step prevents execution.
 
 Default sensitive rules (override with `sensitivePaths`; an empty array disables the escalation):
 
@@ -94,6 +95,7 @@ Details:
     log: true                 # append decision logs
     logDir: ''                # default <DSH_HOME>/logs/outside-access-guard
     logRetentionDays: 7       # delete logs older than N days (0 = keep forever)
+    confirmGapMs: 2000        # mandatory pause between the two confirmations (0 = off)
     sensitiveConfirmations: double   # double | single
     sensitivePaths: []        # omit = default rules; [] = disable the sensitive escalation
     extraAllowedRoots: []     # additional allowed roots

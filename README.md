@@ -41,9 +41,10 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 
 普通工作区外访问只弹一次审批（第 1/1 次）。命中敏感规则的路径会升级：
 
-1. **第 1/2 次确认**：单独弹出高风险告警，显示命中的敏感规则；
-2. **第 2/2 次确认**：通过后才进入这次调用的常规审批；
-3. 两次都批准才执行；任一步拒绝或取消都不会执行。
+1. **第 1/2 次确认**：只负责"开启最终确认"，本身不执行任何操作；
+2. **停顿**：两次之间强制等待 `confirmGapMs`（默认 2000 毫秒）；
+3. **第 2/2 次确认**：这次调用的常规审批——**高危警告文案在这一层**；
+4. 两次都批准才执行；任一步拒绝或取消都不会执行。
 
 默认敏感规则（可用 `sensitivePaths` 覆盖，传空数组即关闭）：
 
@@ -96,6 +97,7 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
     log: true                 # 记录拦截决定
     logDir: ''                # 默认 <DSH_HOME>/logs/outside-access-guard
     logRetentionDays: 7       # 超过 N 天的日志自动删除（0 = 永不删除）
+    confirmGapMs: 2000        # 二次确认之间的强制停顿（毫秒，0 = 关闭）
     sensitiveConfirmations: double   # double | single
     sensitivePaths: []        # 省略 = 默认敏感规则；[] = 关闭敏感升级
     extraAllowedRoots: []     # 额外放行的根目录

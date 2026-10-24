@@ -177,7 +177,7 @@ test('sensitive path with both confirmations approved falls through to ask', asy
     },
   }
   const { ctx, listeners } = harness({ approval })
-  apply(ctx, {})
+  apply(ctx, { confirmGapMs: 0 })
 
   const ssh = path.join(base, 'home2', '.ssh')
   fs.mkdirSync(ssh, { recursive: true })
@@ -191,4 +191,23 @@ test('sensitive path with both confirmations approved falls through to ask', asy
   assert.equal(calls.length, 1)
   assert.equal(result.kind, 'ask')
   assert.match(result.displayReason.zh, /第 2\/2 次确认/)
+})
+
+test('the confirmation gap delays the second dialog', async () => {
+  const approval = { async request() { return 'allowed-once' } }
+  const { ctx, listeners } = harness({ approval })
+  apply(ctx, { confirmGapMs: 60 })
+
+  const ssh = path.join(base, 'home3', '.ssh')
+  fs.mkdirSync(ssh, { recursive: true })
+
+  const started = Date.now()
+  const result = await preExecute(listeners, {
+    name: 'read',
+    arguments: { file_path: path.join(ssh, 'id_rsa') },
+    agent,
+    signal,
+  })
+  assert.equal(result.kind, 'ask')
+  assert.ok(Date.now() - started >= 50, 'the second dialog should wait for the configured gap')
 })

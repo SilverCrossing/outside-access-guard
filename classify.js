@@ -5,6 +5,13 @@
  *
  * Deliberately dependency-free (node:path + node:fs only) so it can be unit
  * tested outside the Harness process.
+ *
+ * Layout, top to bottom:
+ *   1. path tables      — which tool argument names a filesystem target
+ *   2. sensitive tables — outside locations that raise the risk
+ *   3. path helpers     — containment, realpath, prepared roots, globs
+ *   4. shell inspection — absolute tokens, traversal, env expansion
+ *   5. classifyPath / classifyShell / classifyToolCall — the entry points
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -179,6 +186,7 @@ const POSIX_TOKEN = /(?:^|[\s"'`(=[,;|&<>])(\/{1,2}[^\s"'`;|&<>)]*)/g
 const TRAVERSAL = /(^|[\\/\s"'`(=[,;|&])\.\.([\\/\s"'`);|&]|$)/
 const ENV_REFERENCE = /\$env:|\$\{[A-Za-z_]|\$HOME\b|%\w+%|(?:^|[\s"'`(=[,;|&])~([\\/\s"']|$)/i
 
+/** Absolute-path tokens mentioned in a command line (drive, UNC, POSIX). */
 function collectAbsoluteTokens(command) {
   const tokens = new Set()
   for (const regex of [DRIVE_TOKEN, UNC_TOKEN, POSIX_TOKEN]) {
