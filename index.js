@@ -249,7 +249,7 @@ export function apply(ctx, rawConfig) {
       const known = request.callId !== undefined ? pending.get(request.callId) : undefined
       if (known !== undefined) {
         pending.delete(request.callId)
-        logger.write({ event: 'approval', outcome, tool: known.tool, kind: known.kind, risk: known.risk, agent: request.agent?.id })
+        logger.write({ event: 'approval', outcome, tool: known.tool, kind: known.kind, risk: known.risk, agent: request.agent?.id, callId: request.callId })
       }
     } catch {
       // Logging must never change the approval outcome.
@@ -320,16 +320,16 @@ export function apply(ctx, rawConfig) {
     if (decision === null) return next()
 
     if (mode === 'deny') {
-      logger.write({ event: 'deny', mode, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
+      logger.write({ event: 'deny', mode, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
       return denyDecision(decision, 'mode=deny')
     }
 
     if (decision.risk === 'high' && config.sensitiveConfirmations === 'double') {
       rememberAsk(exec, decision)
-      logger.write({ event: 'ask', rule: 'high-risk-step1', mode, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
+      logger.write({ event: 'ask', rule: 'high-risk-step1', mode, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
       const first = await confirmHighRisk(ctx, exec, decision)
       if (first !== null) {
-        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
+        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
         return first
       }
       decision = withSecondStep(decision)
@@ -340,7 +340,7 @@ export function apply(ctx, rawConfig) {
     }
 
     rememberAsk(exec, decision)
-    logger.write({ event: 'ask', mode, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
+    logger.write({ event: 'ask', mode, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
     return {
       kind: 'ask',
       reason: decision.reason,

@@ -106,7 +106,7 @@ Details:
 Every decision appends one JSONL line to `$DSH_HOME/logs/outside-access-guard/YYYY-MM-DD.log`, split by local date and kept for 7 days (cleaned on process start, then at most every six hours):
 
 ```json
-{"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","reason":"..."}
+{"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","callId":"...","reason":"..."}
 ```
 
 - `event`: `ask` / `deny` / `cancel` / `mode` / `approval` (the outcome);

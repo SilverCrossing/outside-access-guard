@@ -79,6 +79,7 @@ test('logs the approval outcome for a call this plugin gated', async () => {
   assert.ok(line)
   assert.equal(line.outcome, 'allowed-once')
   assert.equal(line.tool, 'read')
+  assert.equal(line.callId, 'call-1')
 })
 
 test('does not log approvals this plugin never asked for', async () => {

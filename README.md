@@ -108,7 +108,7 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 每次判定写一行 JSONL 到 `$DSH_HOME/logs/outside-access-guard/YYYY-MM-DD.log`，按本地日期分文件，默认保留 7 天（进程启动时清理一次，之后每 6 小时一次）：
 
 ```json
-{"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","reason":"..."}
+{"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","callId":"...","reason":"..."}
 ```
 
 - `event`：`ask` / `deny` / `cancel` / `mode` / `approval`（审批结果）；
