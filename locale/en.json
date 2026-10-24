@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Outside Access Guard",
-    "description": "Require approval whenever a tool reads outside the session workspace."
+    "description": "Require approval whenever a tool reads outside the session workspace; every decision is logged per day."
   }
 }

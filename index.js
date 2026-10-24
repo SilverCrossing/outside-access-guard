@@ -20,6 +20,7 @@
 import path from 'node:path'
 
 import { classifyToolCall, DEFAULT_SENSITIVE_PATTERNS } from './classify.js'
+import { createLogger } from './log.js'
 
 export const name = 'outside-access-guard'
 
@@ -40,6 +41,9 @@ function normalizeConfig(raw) {
     : [...DEFAULT_SENSITIVE_PATTERNS]
   return {
     mode,
+    log: config.log !== false,
+    logDir: typeof config.logDir === 'string' ? config.logDir.trim() : '',
+    logRetentionDays: Number.isFinite(config.logRetentionDays) ? config.logRetentionDays : 7,
     extraAllowedRoots,
     sensitivePaths,
     sensitiveConfirmations: config.sensitiveConfirmations === 'single' ? 'single' : 'double',
@@ -223,12 +227,14 @@ function registerModeCommand(ctx, config, getMode, setMode) {
 
 export function apply(ctx, rawConfig) {
   const config = normalizeConfig(rawConfig)
+  const logger = createLogger('outside-access-guard', config)
   let mode = config.mode
   let warnedNoRoots = false
   const boundaries = new Map()
 
   registerModeCommand(ctx, config, () => mode, value => {
     mode = value
+    logger.write({ event: 'mode', mode: value })
   })
 
   ctx.on('agent/disposed', payload => {
@@ -285,12 +291,16 @@ export function apply(ctx, rawConfig) {
     if (decision === null) return next()
 
     if (mode === 'deny') {
+      logger.write({ event: 'deny', mode, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
       return denyDecision(decision, 'mode=deny')
     }
 
     if (decision.risk === 'high' && config.sensitiveConfirmations === 'double') {
       const first = await confirmHighRisk(ctx, exec, decision)
-      if (first !== null) return first
+      if (first !== null) {
+        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
+        return first
+      }
       decision = withSecondStep(decision)
     }
 
@@ -298,6 +308,7 @@ export function apply(ctx, rawConfig) {
       return { kind: 'cancel' }
     }
 
+    logger.write({ event: 'ask', mode, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id })
     return {
       kind: 'ask',
       reason: decision.reason,

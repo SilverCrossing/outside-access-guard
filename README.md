@@ -93,12 +93,28 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 - id: outside-access-guard
   config:
     mode: ask                 # deny | ask | allow，默认 ask
+    log: true                 # 记录拦截决定
+    logDir: ''                # 默认 <DSH_HOME>/logs/outside-access-guard
+    logRetentionDays: 7       # 超过 N 天的日志自动删除（0 = 永不删除）
     sensitiveConfirmations: double   # double | single
     sensitivePaths: []        # 省略 = 默认敏感规则；[] = 关闭敏感升级
     extraAllowedRoots: []     # 额外放行的根目录
     gateShell: true           # 是否检查 shell，默认 true
     gatePathTools: true       # 是否检查文件类工具，默认 true
 ```
+
+## 日志
+
+每次判定写一行 JSONL 到 `$DSH_HOME/logs/outside-access-guard/YYYY-MM-DD.log`，按本地日期分文件，默认保留 7 天（进程启动时清理一次，之后每 6 小时一次）：
+
+```json
+{"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","reason":"..."}
+```
+
+- `event`：`ask` / `deny` / `cancel` / `mode`；
+- 只记录**被判定过**的调用（工作区内的读取不会产生日志）；
+- 写日志失败只告警，不影响拦截；
+- `log: false` 关闭，`logDir` 换目录，`logRetentionDays` 改保留天数。
 
 ## 已知限制
 

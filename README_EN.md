@@ -91,12 +91,28 @@ Details:
 - id: outside-access-guard
   config:
     mode: ask                 # deny | ask | allow, default ask
+    log: true                 # append decision logs
+    logDir: ''                # default <DSH_HOME>/logs/outside-access-guard
+    logRetentionDays: 7       # delete logs older than N days (0 = keep forever)
     sensitiveConfirmations: double   # double | single
     sensitivePaths: []        # omit = default rules; [] = disable the sensitive escalation
     extraAllowedRoots: []     # additional allowed roots
     gateShell: true           # inspect shell tools, default true
     gatePathTools: true       # inspect file tools, default true
 ```
+
+## Logging
+
+Every decision appends one JSONL line to `$DSH_HOME/logs/outside-access-guard/YYYY-MM-DD.log`, split by local date and kept for 7 days (cleaned on process start, then at most every six hours):
+
+```json
+{"ts":"2026-10-24T20:38:35.123+08:00","event":"ask","mode":"ask","tool":"read","risk":"normal","agent":"...","reason":"..."}
+```
+
+- `event`: `ask` / `deny` / `cancel` / `mode`;
+- only calls that were classified are logged (reads inside the workspace produce nothing);
+- a failed write only warns and never affects interception;
+- `log: false` disables it, `logDir` changes the directory, `logRetentionDays` changes retention.
 
 ## Known limitations
 
