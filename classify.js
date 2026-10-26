@@ -331,15 +331,17 @@ const TOOL_TEXT = {
   shell: { en: 'run a shell command', zh: '执行 shell 命令' },
 }
 
-function summarize(tool, target, why) {
+function summarize(tool, target, why, matched = null) {
   const action = TOOL_TEXT[tool] ?? { en: 'access a path', zh: '访问路径' }
   const reason = WHY_TEXT[why] ?? WHY_TEXT.absolute
   const shown = String(target)
+  const tailEn = matched === null || matched === '' ? '' : ` [matched path: ${matched}]`
+  const tailZh = matched === null || matched === '' ? '' : `［命中路径：${matched}］`
   return {
-    reason: `${tool} would ${action.en}: ${shown} — ${reason.en}.`,
+    reason: `${tool} would ${action.en}: ${shown}${tailEn} — ${reason.en}.`,
     displayReason: {
-      en: `Approval required outside the workspace: ${tool} would ${action.en}: ${shown} (${reason.en}).`,
-      zh: `访问工作区外需要审批：${tool} 将${action.zh}：${shown}（${reason.zh}）。`,
+      en: `Approval required outside the workspace: ${tool} would ${action.en}: ${shown}${tailEn} (${reason.en}).`,
+      zh: `访问工作区外需要审批：${tool} 将${action.zh}：${shown}${tailZh}（${reason.zh}）。`,
     },
   }
 }
@@ -392,18 +394,30 @@ export function classifyToolCall({
   }
   if (!verdict) return null
 
-  const summary = summarize(name, verdict.target, verdict.why)
+  // A shell gate is judged on the whole command, so the card must show the
+  // command. The matched path is appended instead of substituted: a reader who
+  // only sees `D:\` cannot tell what is about to run.
+  const command = SHELL_TOOLS.has(name) && args !== null && typeof args === 'object' && typeof args.command === 'string'
+    ? args.command.trim()
+    : ''
+  const display = command === ''
+    ? verdict.target
+    : command.length > 240 ? `${command.slice(0, 240)}…` : command
+  const matched = command === '' || verdict.target === display ? null : verdict.target
+
+  const summary = summarize(name, display, verdict.why, matched)
   if (!verdict.pathLike) return { ...summary, risk: 'normal' }
 
   const sensitivePattern = matchSensitive(verdict.real || verdict.target, sensitivePatterns)
   if (!sensitivePattern) return { ...summary, risk: 'normal' }
 
-  const shown = String(verdict.target)
+  const tailEn = matched === null ? '' : ` [matched path: ${matched}]`
+  const tailZh = matched === null ? '' : `［命中路径：${matched}］`
   return {
     reason: `HIGH RISK: ${summary.reason} Sensitive rule: ${sensitivePattern}.`,
     displayReason: {
-      en: `⚠ HIGH RISK outside access: ${name} → ${shown} matches sensitive rule "${sensitivePattern}" (credentials, private keys, or browser session data). ${summary.displayReason.en}`,
-      zh: `⚠ 高风险工作区外访问：${name} → ${shown} 命中敏感规则「${sensitivePattern}」（凭据、私钥或浏览器会话数据）。${summary.displayReason.zh}`,
+      en: `⚠ HIGH RISK outside access: ${name} → ${display}${tailEn} matches sensitive rule "${sensitivePattern}" (credentials, private keys, or browser session data). ${summary.displayReason.en}`,
+      zh: `⚠ 高风险工作区外访问：${name} → ${display}${tailZh} 命中敏感规则「${sensitivePattern}」（凭据、私钥或浏览器会话数据）。${summary.displayReason.zh}`,
     },
     risk: 'high',
     sensitivePattern,
