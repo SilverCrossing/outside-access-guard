@@ -12,15 +12,17 @@
  *             matches a sensitive path requires a second, separate approval;
  *   - allow → nothing is intercepted.
  *
- * The mode can be changed in the profile patch (`mode:`) or, while the process
- * runs, through the human-only command `/outside-access deny|ask|allow|status`.
- * Slash commands cannot be issued by the model, so the runtime switch cannot be
- * used to widen its own access.
+ * The mode is resolved per call in three layers: a per-session override set by
+ * the human-only command `/outside-access …`, an absolute-root workspace
+ * binding (`workspaces:`), and the configured default. Slash commands cannot be
+ * issued by the model, so the runtime switch cannot be used to widen its own
+ * access, and an override is never inherited by a subagent.
  */
 import path from 'node:path'
 
 import { classifyToolCall, DEFAULT_SENSITIVE_PATTERNS } from './classify.js'
 import { createLogger } from './log.js'
+import { createSessionOverrides, matchWorkspace, normalizeWorkspaces, sessionKey } from './scope.js'
 
 export const name = 'outside-access-guard'
 
@@ -47,10 +49,14 @@ function normalizeConfig(raw) {
   if (config.subagentMode !== undefined && !MODES.has(config.subagentMode)) {
     console.warn('[outside-access-guard] config.subagentMode must be "deny", "ask" or "allow"; inheriting mode')
   }
+  // Absolute-root bindings that replace the default for one workspace.
+  const workspaces = normalizeWorkspaces(config.workspaces, 'workspaces', MODES, message => console.warn(`[outside-access-guard] ${message}`))
   return {
     mode,
-    // `null` inherits the live mode, so `/outside-access` still applies to both.
+    // `null` inherits whatever the call resolves to, so a workspace binding
+    // still applies where no subagent-specific mode was configured.
     subagentMode: MODES.has(config.subagentMode) ? config.subagentMode : null,
+    workspaces,
     log: config.log !== false,
     logDir: typeof config.logDir === 'string' ? config.logDir.trim() : '',
     logRetentionDays: Number.isFinite(config.logRetentionDays) ? config.logRetentionDays : 7,
@@ -200,23 +206,76 @@ function withSecondStep(decision) {
 
 function modeHelp() {
   return [
-    '用法：/outside-access [deny|ask|allow|status]',
-    '  deny  — 禁止访问工作区外（直接拒绝）',
-    '  ask   — 工作区外每次审批；敏感路径需两次确认（默认）',
-    '  allow — 不拦截工作区外访问',
+    '用法：/outside-access [deny|ask|allow|reset|status]',
+    '  deny  — 本会话禁止访问工作区外（直接拒绝）',
+    '  ask   — 本会话工作区外每次审批；敏感路径需两次确认（默认）',
+    '  allow — 本会话不拦截工作区外访问',
+    '  reset — 清除本会话覆盖，回到配置/工作区绑定',
+    '',
+    '以上覆盖只作用于当前会话，重启后失效；子代理不受影响。',
   ].join('\n')
 }
 
-function statusText(mode, config) {
-  const meaning = {
-    deny: '禁止访问工作区外（直接拒绝）',
-    ask: `工作区外每次审批；敏感路径${config.sensitiveConfirmations === 'double' ? '两次确认' : '仅一次确认'}`,
-    allow: '不拦截工作区外访问',
-  }[mode]
-  return `工作区外访问模式：${mode}（配置默认：${config.mode}）\n子代理模式：${config.subagentMode ?? '继承主模式'}\n含义：${meaning}\n敏感规则：${config.sensitivePaths.length} 条`
+const SOURCE_LABEL = { config: '配置默认', workspace: '工作区绑定', session: '本会话覆盖' }
+
+const MEANING = {
+  deny: '禁止访问工作区外（直接拒绝）',
+  ask: '工作区外每次审批；敏感路径两次确认',
+  allow: '不拦截工作区外访问',
 }
 
-function registerModeCommand(ctx, config, getMode, setMode) {
+/**
+ * Effective mode for one call: session override > workspace binding > config.
+ *
+ * A subagent resolves through its own knob (`subagentMode`) and then through the
+ * same binding/default chain, but never through a session override or a
+ * session-level relaxation.
+ */
+function resolveMode({ config, overrides, sessionId, cwd, scope }) {
+  const override = overrides.get(sessionId)
+  const binding = matchWorkspace(cwd, config.workspaces)
+  const bound = binding === null ? undefined : binding.mode
+  if (scope === 'subagent') {
+    return {
+      mode: config.subagentMode ?? bound ?? config.mode,
+      source: config.subagentMode !== null ? 'config' : binding === null ? 'config' : 'workspace',
+      binding,
+    }
+  }
+  return {
+    mode: override?.mode ?? bound ?? config.mode,
+    source: override === undefined ? (binding === null ? 'config' : 'workspace') : 'session',
+    binding,
+  }
+}
+
+function statusText({ config, overrides, sessionId, cwd }) {
+  const policy = resolveMode({ config, overrides, sessionId, cwd, scope: 'main' })
+  const binding = policy.binding === null
+    ? (config.workspaces.length === 0 ? '未配置' : '未命中（当前会话不在任何绑定根下）')
+    : `${policy.binding.root} → ${policy.binding.mode}`
+  return [
+    `工作区外访问：本会话 ${policy.mode}（来源：${SOURCE_LABEL[policy.source]}）`,
+    `配置默认：${config.mode} · 子代理：${config.subagentMode ?? '继承解析结果'}`,
+    `工作区绑定：${binding}`,
+    `含义：${MEANING[policy.mode]}`,
+    `敏感规则：${config.sensitivePaths.length} 条`,
+  ].join('\n')
+}
+
+/** The session directory an invocation addresses, or null. */
+async function sessionDirFor(ctx, agent) {
+  const workingDirectory = ctx.get('workingDirectory')
+  if (workingDirectory === undefined || typeof workingDirectory.ensure !== 'function') return null
+  if (agent === undefined || agent === null) return null
+  try {
+    return await workingDirectory.ensure(agent)
+  } catch {
+    return null
+  }
+}
+
+function registerModeCommand(ctx, config, overrides, logger) {
   const commands = ctx.get('commands')
   if (commands === undefined || typeof commands.register !== 'function') {
     console.warn('[outside-access-guard] commands service unavailable; /outside-access is not registered')
@@ -225,19 +284,25 @@ function registerModeCommand(ctx, config, getMode, setMode) {
   try {
     const definition = {
       name: 'outside-access',
-      description: '切换工作区外访问模式：deny（禁止）、ask（审批）、allow（放行）。',
-      input: { hint: 'deny | ask | allow | status' },
-      handler: (invocation) => {
+      description: '切换本会话的工作区外访问模式：deny（禁止）、ask（审批）、allow（放行）、reset。',
+      input: { hint: 'deny | ask | allow | reset | status' },
+      handler: async (invocation) => {
         const argument = invocation.rawInput.trim().toLowerCase()
+        const sessionId = sessionKey(invocation.agent)
+        const cwd = await sessionDirFor(ctx, invocation.agent)
+        const report = () => statusText({ config, overrides, sessionId, cwd })
         if (argument === '' || argument === 'status') {
-          return { kind: 'success', text: statusText(getMode(), config) }
+          return { kind: 'success', text: report() }
         }
         if (MODES.has(argument)) {
-          setMode(argument)
-          return {
-            kind: 'success',
-            text: `已切换为「${argument}」。\n${statusText(argument, config)}`,
-          }
+          overrides.patch(sessionId, { mode: argument })
+          logger.write({ event: 'mode', mode: argument, session: sessionId === '' ? undefined : sessionId })
+          return { kind: 'success', text: `本会话已切换为「${argument}」。\n${report()}` }
+        }
+        if (argument === 'reset') {
+          overrides.delete(sessionId)
+          logger.write({ event: 'mode', mode: 'reset', session: sessionId === '' ? undefined : sessionId })
+          return { kind: 'success', text: `已清除本会话覆盖。\n${report()}` }
         }
         return { kind: 'error', text: modeHelp() }
       },
@@ -291,18 +356,17 @@ export function apply(ctx, rawConfig) {
     return outcome
   })
 
-  let mode = config.mode
+  const overrides = createSessionOverrides()
   let warnedNoRoots = false
   const boundaries = new Map()
 
-  registerModeCommand(ctx, config, () => mode, value => {
-    mode = value
-    logger.write({ event: 'mode', mode: value })
-  })
+  registerModeCommand(ctx, config, overrides, logger)
 
   ctx.on('agent/disposed', payload => {
     const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
     if (agent !== undefined && typeof agent.id === 'string') boundaries.delete(agent.id)
+    const key = sessionKey(agent)
+    if (key !== '') overrides.delete(key)
   })
 
   // Pipeline for one call:
@@ -313,13 +377,19 @@ export function apply(ctx, rawConfig) {
       return next()
     }
     const scope = isSubagentCall(ctx, exec) ? 'subagent' : 'main'
-    const effectiveMode = scope === 'subagent' && config.subagentMode !== null ? config.subagentMode : mode
-    if (effectiveMode === 'allow') return next()
+    const sessionId = sessionKey(exec.agent)
     if (exec.signal !== undefined && exec.signal.aborted) {
       return { kind: 'cancel' }
     }
 
     const cwd = await sessionCwd(ctx, exec)
+    const policy = resolveMode({ config, overrides, sessionId, cwd, scope })
+    const effectiveMode = policy.mode
+    // Every decision line carries where the mode came from, so "why was this
+    // allowed" is answerable from the log alone.
+    const meta = { modeSource: policy.source, session: sessionId === '' ? undefined : sessionId }
+    if (effectiveMode === 'allow') return next()
+
     const boundary = rememberBoundary(boundaries, exec.agent, cwd)
     if (boundary === null) {
       if (!warnedNoRoots) {
@@ -359,16 +429,16 @@ export function apply(ctx, rawConfig) {
     if (decision === null) return next()
 
     if (effectiveMode === 'deny') {
-      logger.write({ event: 'deny', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+      logger.write({ event: 'deny', mode: effectiveMode, ...meta, scope, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
       return denyDecision(decision, 'mode=deny')
     }
 
     if (decision.risk === 'high' && config.sensitiveConfirmations === 'double') {
       rememberAsk(exec, decision)
-      logger.write({ event: 'ask', rule: 'high-risk-step1', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+      logger.write({ event: 'ask', rule: 'high-risk-step1', mode: effectiveMode, ...meta, scope, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
       const first = await confirmHighRisk(ctx, exec, decision)
       if (first !== null) {
-        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode: effectiveMode, ...meta, scope, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
         return first
       }
       decision = withSecondStep(decision)
@@ -385,7 +455,7 @@ export function apply(ctx, rawConfig) {
     }
 
     rememberAsk(exec, decision)
-    logger.write({ event: 'ask', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+    logger.write({ event: 'ask', mode: effectiveMode, ...meta, scope, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
     return {
       kind: 'ask',
       reason: decision.reason,

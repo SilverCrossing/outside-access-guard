@@ -36,12 +36,15 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 | `ask`（默认） | 放行 | **每次审批** | 敏感路径需要**两次确认** |
 | `allow` | 放行 | 放行 | 对应总开关"完全允许" |
 
-模式有两个入口：
+模式有三个入口：
 
 1. **持久默认值**：profile patch 里的 `mode`，重启后生效；
-2. **运行时开关**：人类命令 `/outside-access deny|ask|allow|status`。
+2. **工作区绑定**：`workspaces: [{ root, mode }]`，按会话目录命中最长前缀，跨会话、重启后仍有效；
+3. **会话覆盖**：人类命令 `/outside-access deny|ask|allow|reset`，只改当前会话。
    斜杠命令只能由人发出，模型无法调用，因此不能用它给自己扩权。
-   该开关**只存在于内存中**，重启回到配置默认值。
+   覆盖**只存在于内存中**，重启回到工作区绑定或配置默认值。
+
+优先级：会话覆盖 → 工作区绑定 → 配置默认。`root` 必须是绝对路径，相对值会被拒绝并告警。
 
 ```yaml
 - id: outside-access-guard
@@ -119,7 +122,8 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 - id: outside-access-guard
   config:
     mode: ask                 # deny | ask | allow，默认 ask
-    subagentMode: ''          # deny | ask | allow；留空 = 继承 mode
+    subagentMode: ''          # deny | ask | allow；留空 = 继承解析结果（工作区绑定 → 配置默认）
+    workspaces: []            # [{ root: 'D:\docs', mode: 'deny' }]；root 必须绝对路径
     log: true                 # 记录拦截决定
     logDir: ''                # 默认 <DSH_HOME>/logs/outside-access-guard
     logRetentionDays: 7       # 超过 N 天的日志自动删除（0 = 永不删除）
@@ -141,6 +145,7 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 
 - `event`：`ask` / `deny` / `cancel` / `mode` / `approval`（审批结果）；
 - 只记录**被判定过**的调用（工作区内的读取不会产生日志）；
+- 每条判定都带 `modeSource`（`config` / `workspace` / `session`）和 `session`，事后能分清“是配置、工作区绑定还是会话覆盖给的”；
 - 写日志失败只告警，不影响拦截；
 - `log: false` 关闭，`logDir` 换目录，`logRetentionDays` 改保留天数。
 
@@ -152,7 +157,7 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
    `tools/pre-execute`。
 3. **审批策略为 `never` 或没有应答者时**，`ask` 失败关闭（拒绝），不会放行。
 4. **不改变写入策略**：写工作区外仍由沙箱拒绝；`allow` 只影响本插件，不会放宽内核沙箱。
-5. **模式是进程全局的**，不按会话区分；运行时开关重启即失效。
+5. **会话覆盖不跨会话**：`/outside-access` 只改当前会话，重启失效；需要跨会话固定请用 `workspaces`。子代理也不会继承会话覆盖，它按 `subagentMode` → 工作区绑定 → 配置默认解析。
 6. **开发阶段的已知缺口**：插件源码位于工作区，模型可通过 `write`/`edit` 改写它
    （重启或热重载后生效）。正式发布前应把安装副本移出工作区，并加自我修改防护。
 7. 敏感规则是"提醒"而不是"保证"：用户仍可能在两次确认里手滑放行；
