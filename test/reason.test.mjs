@@ -15,7 +15,7 @@ test('a shell command shows the command, not just the matched path', () => {
   assert.ok(decision)
   assert.match(decision.reason, /Get-ChildItem D:\\ -Force/)
   assert.match(decision.reason, /matched path: D:\\/)
-  assert.match(decision.displayReason.zh, /命中路径：D:\\/)
+  assert.match(decision.displayReason.zh, / ［命中路径：D:\\］/)
 })
 
 test('an environment expansion keeps the command and needs no matched tail', () => {

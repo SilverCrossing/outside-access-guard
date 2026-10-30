@@ -49,6 +49,19 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
     mode: ask
 ```
 
+## 子代理的独立模式：`subagentMode`
+
+子代理（`subagent`、`workflow` 里的 `agent()`）没有审批通道，主模式的 `ask` 对它们只会 fail-closed。可以给它们单独一档：
+
+| `subagentMode` | 行为 |
+| --- | --- |
+| 留空（默认） | 继承主模式；`/outside-access` 切换时两边一起变 |
+| `deny` | 子代理一律不许越界，意图最明确 |
+| `ask` | 与主模式相同（实际仍会 fail-closed） |
+| `allow` | 子代理可自由访问工作区外（不推荐） |
+
+判定用 `agents.roots()`（顶层 agent 列表）：不在列表里的视为子代理。服务不可用时按主会话处理。日志里的 `mode` 字段记录的是**实际生效**的模式，并附带 `scope`。
+
 ## 敏感路径：更高一级的报警 + 二次确认
 
 普通工作区外访问只弹一次审批（第 1/1 次）。命中敏感规则的路径会升级：
@@ -106,6 +119,7 @@ DSH 的文件沙箱在 `workspace-write` 模式下**只限制写入，不限制�
 - id: outside-access-guard
   config:
     mode: ask                 # deny | ask | allow，默认 ask
+    subagentMode: ''          # deny | ask | allow；留空 = 继承 mode
     log: true                 # 记录拦截决定
     logDir: ''                # 默认 <DSH_HOME>/logs/outside-access-guard
     logRetentionDays: 7       # 超过 N 天的日志自动删除（0 = 永不删除）

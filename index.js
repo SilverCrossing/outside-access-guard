@@ -44,8 +44,13 @@ function normalizeConfig(raw) {
   const sensitivePaths = Array.isArray(config.sensitivePaths)
     ? config.sensitivePaths.filter(value => typeof value === 'string' && value.trim() !== '')
     : [...DEFAULT_SENSITIVE_PATTERNS]
+  if (config.subagentMode !== undefined && !MODES.has(config.subagentMode)) {
+    console.warn('[outside-access-guard] config.subagentMode must be "deny", "ask" or "allow"; inheriting mode')
+  }
   return {
     mode,
+    // `null` inherits the live mode, so `/outside-access` still applies to both.
+    subagentMode: MODES.has(config.subagentMode) ? config.subagentMode : null,
     log: config.log !== false,
     logDir: typeof config.logDir === 'string' ? config.logDir.trim() : '',
     logRetentionDays: Number.isFinite(config.logRetentionDays) ? config.logRetentionDays : 7,
@@ -99,6 +104,24 @@ function rememberBoundary(boundaries, agent, cwd) {
   if (existing !== undefined) return existing
   boundaries.set(agent.id, absolute)
   return absolute
+}
+
+/**
+ * Whether one call comes from a subagent instead of a top-level session.
+ *
+ * `agents.roots()` lists agents created without an owning agent context, so
+ * `subagent` and `workflow` children are absent from it. A missing service or a
+ * thrown lookup counts as top-level, which keeps the configured main mode.
+ */
+function isSubagentCall(ctx, exec) {
+  if (exec.agent === undefined || exec.agent === null) return false
+  const agents = ctx.get('agents')
+  if (agents === undefined || typeof agents.roots !== 'function') return false
+  try {
+    return !agents.roots().some(agent => agent.id === exec.agent.id)
+  } catch {
+    return false
+  }
 }
 
 /** Current session directory, or null when it cannot be determined. */
@@ -190,7 +213,7 @@ function statusText(mode, config) {
     ask: `工作区外每次审批；敏感路径${config.sensitiveConfirmations === 'double' ? '两次确认' : '仅一次确认'}`,
     allow: '不拦截工作区外访问',
   }[mode]
-  return `工作区外访问模式：${mode}（配置默认：${config.mode}）\n含义：${meaning}\n敏感规则：${config.sensitivePaths.length} 条`
+  return `工作区外访问模式：${mode}（配置默认：${config.mode}）\n子代理模式：${config.subagentMode ?? '继承主模式'}\n含义：${meaning}\n敏感规则：${config.sensitivePaths.length} 条`
 }
 
 function registerModeCommand(ctx, config, getMode, setMode) {
@@ -289,7 +312,9 @@ export function apply(ctx, rawConfig) {
     if (exec === null || typeof exec !== 'object' || typeof exec.name !== 'string') {
       return next()
     }
-    if (mode === 'allow') return next()
+    const scope = isSubagentCall(ctx, exec) ? 'subagent' : 'main'
+    const effectiveMode = scope === 'subagent' && config.subagentMode !== null ? config.subagentMode : mode
+    if (effectiveMode === 'allow') return next()
     if (exec.signal !== undefined && exec.signal.aborted) {
       return { kind: 'cancel' }
     }
@@ -333,17 +358,17 @@ export function apply(ctx, rawConfig) {
 
     if (decision === null) return next()
 
-    if (mode === 'deny') {
-      logger.write({ event: 'deny', mode, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+    if (effectiveMode === 'deny') {
+      logger.write({ event: 'deny', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk ?? 'normal', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
       return denyDecision(decision, 'mode=deny')
     }
 
     if (decision.risk === 'high' && config.sensitiveConfirmations === 'double') {
       rememberAsk(exec, decision)
-      logger.write({ event: 'ask', rule: 'high-risk-step1', mode, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+      logger.write({ event: 'ask', rule: 'high-risk-step1', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
       const first = await confirmHighRisk(ctx, exec, decision)
       if (first !== null) {
-        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+        logger.write({ event: first.kind === 'cancel' ? 'cancel' : 'deny', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk, rule: 'high-risk-step1', reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
         return first
       }
       decision = withSecondStep(decision)
@@ -360,7 +385,7 @@ export function apply(ctx, rawConfig) {
     }
 
     rememberAsk(exec, decision)
-    logger.write({ event: 'ask', mode, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
+    logger.write({ event: 'ask', mode: effectiveMode, scope, tool: exec.name, risk: decision.risk ?? 'normal', rule: decision.sensitivePattern ?? null, reason: String(decision.reason ?? '').slice(0, 300), agent: exec.agent?.id, callId: exec.callId })
     return {
       kind: 'ask',
       reason: decision.reason,

@@ -336,7 +336,7 @@ function summarize(tool, target, why, matched = null) {
   const reason = WHY_TEXT[why] ?? WHY_TEXT.absolute
   const shown = String(target)
   const tailEn = matched === null || matched === '' ? '' : ` [matched path: ${matched}]`
-  const tailZh = matched === null || matched === '' ? '' : `［命中路径：${matched}］`
+  const tailZh = matched === null || matched === '' ? '' : ` ［命中路径：${matched}］`
   return {
     reason: `${tool} would ${action.en}: ${shown}${tailEn} — ${reason.en}.`,
     displayReason: {
@@ -412,7 +412,7 @@ export function classifyToolCall({
   if (!sensitivePattern) return { ...summary, risk: 'normal' }
 
   const tailEn = matched === null ? '' : ` [matched path: ${matched}]`
-  const tailZh = matched === null ? '' : `［命中路径：${matched}］`
+  const tailZh = matched === null ? '' : ` ［命中路径：${matched}］`
   return {
     reason: `HIGH RISK: ${summary.reason} Sensitive rule: ${sensitivePattern}.`,
     displayReason: {
