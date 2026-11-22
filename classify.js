@@ -14,6 +14,7 @@
  *   5. classifyPath / classifyShell / classifyToolCall — the entry points
  */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 const WINDOWS = process.platform === 'win32'
@@ -147,6 +148,23 @@ function isAllowed(absolute, real, roots) {
 }
 
 /**
+ * True only for DSH-owned ephemeral spill/scratch subdirectories under `os.tmpdir()`
+ * (`dsh-spill-*`, `dsh-py-scratch-*`). The top-level `os.tmpdir()` itself is NOT
+ * exempted here so other applications' temp files (e.g., browser/proxy caches)
+ * remain protected by `outside-access-guard`.
+ */
+function isDshOwnedEphemeralPath(target) {
+  if (typeof target !== 'string' || target.trim() === '') return false
+  const tmp = os.tmpdir()
+  if (typeof tmp !== 'string' || tmp.trim() === '') return false
+  const resolved = path.resolve(target.trim())
+  if (!isInside(tmp, resolved)) return false
+  const rel = path.relative(tmp, resolved).replace(/\\/g, '/')
+  const firstSegment = rel.split('/')[0] ?? ''
+  return /^(?:dsh-spill-|dsh-py-scratch-)/i.test(firstSegment)
+}
+
+/**
  * Classify one path argument.
  * @returns {null | { target: string, real: string, why: string, pathLike: true }}
  */
@@ -158,6 +176,8 @@ export function classifyPath(raw, cwd, roots) {
   if (prepared.length === 0) return null
 
   const value = raw.trim()
+  if (isBenignPseudoPath(value) || isDshOwnedEphemeralPath(value)) return null
+
   const base = cwd && path.isAbsolute(cwd) ? cwd : prepared[0].absolute
 
   // `~` expansion happens inside the shell/tool, not here; treat it as outside.
@@ -183,19 +203,90 @@ export function classifyPath(raw, cwd, roots) {
 const DRIVE_TOKEN = /(?:^|[\s"'`(=[,;|&<>])([A-Za-z]:[\\/][^\s"'`;|&<>)]*)/g
 const UNC_TOKEN = /(?:^|[\s"'`(=[,;|&<>])(\\\\[^\s"'`;|&<>)]+)/g
 const POSIX_TOKEN = /(?:^|[\s"'`(=[,;|&<>])(\/{1,2}[^\s"'`;|&<>)]*)/g
-const TRAVERSAL = /(^|[\\/\s"'`(=[,;|&])\.\.([\\/\s"'`);|&]|$)/
-const ENV_REFERENCE = /\$env:|\$\{[A-Za-z_]|\$HOME\b|%\w+%|(?:^|[\s"'`(=[,;|&])~([\\/\s"']|$)/i
+const TRAVERSAL = /(?:^|[\\/\s"'`(=[,;|&])(\.\.)(?:[\\/\s"'`);|&]|$)/
+const ENV_REFERENCE = /(\$env:[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$HOME\b|%[A-Za-z_][A-Za-z0-9_]*%|(?:^|[\s"'`(=[,;|&])~(?=[\\/\s"']|$))/i
+
+/**
+ * On Windows, a single-slash token like `'/mcp'`, `'/sse'`, `'/'`, or `cmd /c`
+ * is an HTTP route or CLI switch, not a filesystem path — UNLESS its first
+ * path component actually exists at the root of the current drive or cwd drive
+ * (e.g. `/Users/ASUS` -> `C:\Users` exists, `/Windows/System32` -> `C:\Windows`
+ * exists), which keeps `/Users/...` fail-closed with zero false negatives.
+ */
+function isNonPathWindowsSlashToken(token, cwd) {
+  if (!WINDOWS) return false
+  if (!token.startsWith('/') || token.startsWith('//')) return false
+  const trimmed = token.replace(/^\/+/, '').replace(/\/+$/, '')
+  if (trimmed === '') return true
+  const firstSegment = trimmed.split('/')[0]
+  if (firstSegment === '' || firstSegment === '.' || firstSegment === '..') return false
+
+  const drives = new Set(['C:\\'])
+  if (typeof cwd === 'string' && /^[A-Za-z]:/.test(cwd)) {
+    drives.add(`${cwd.slice(0, 2)}\\`)
+  }
+  const sysDrive = process.env.SystemDrive
+  if (typeof sysDrive === 'string' && /^[A-Za-z]:$/.test(sysDrive.trim())) {
+    drives.add(`${sysDrive.trim()}\\`)
+  }
+  for (const driveRoot of drives) {
+    try {
+      if (fs.existsSync(path.join(driveRoot, firstSegment))) return false
+    } catch {
+      // If stat/exists fails unexpectedly, fail closed (treat as a real path).
+      return false
+    }
+  }
+  return true
+}
 
 /** Absolute-path tokens mentioned in a command line (drive, UNC, POSIX). */
-function collectAbsoluteTokens(command) {
+function collectAbsoluteTokens(command, cwd) {
   const tokens = new Set()
   for (const regex of [DRIVE_TOKEN, UNC_TOKEN, POSIX_TOKEN]) {
     regex.lastIndex = 0
     let match
-    while ((match = regex.exec(command)) !== null) tokens.add(match[1])
+    while ((match = regex.exec(command)) !== null) {
+      const candidate = match[1]
+      if (regex === POSIX_TOKEN && isNonPathWindowsSlashToken(candidate, cwd)) continue
+      tokens.add(candidate)
+    }
     regex.lastIndex = 0
   }
   return [...tokens]
+}
+
+const BENIGN_PSEUDO_PATHS = new Set([
+  '/dev/null',
+  '/dev/zero',
+  '/dev/full',
+  '/dev/random',
+  '/dev/urandom',
+  '/dev/stdin',
+  '/dev/stdout',
+  '/dev/stderr',
+  '/dev/tty',
+  'nul',
+])
+
+export function isBenignPseudoPath(target) {
+  if (typeof target !== 'string' || target.trim() === '') return false
+  const normalized = target.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  if (BENIGN_PSEUDO_PATHS.has(normalized)) return true
+  if (/^\/dev\/fd\/\d+$/.test(normalized)) return true
+  if (/^\/proc\/(?:self|\d+)\/(?:fd|status|stat|cmdline|maps|environ|limits|mounts|cgroup)(?:\/.*)?$/.test(normalized)) {
+    return true
+  }
+  return false
+}
+
+function isPosixEphemeralTmp(target) {
+  if (typeof target !== 'string' || target.trim() === '') return false
+  const norm = target.trim().replace(/\\/g, '/')
+  if (norm === '/tmp' || norm.startsWith('/tmp/') || norm === '/private/tmp' || norm.startsWith('/private/tmp/')) {
+    return true
+  }
+  return isDshOwnedEphemeralPath(target)
 }
 
 /**
@@ -206,28 +297,80 @@ function collectAbsoluteTokens(command) {
 export function classifyShell(command, cwd, roots, workdir) {
   const prepared = ensurePrepared(roots)
   if (typeof workdir === 'string' && workdir.trim() !== '') {
-    const verdict = classifyPath(workdir, cwd, prepared)
-    if (verdict) return verdict
+    const trimmedWorkdir = workdir.trim()
+    if (
+      trimmedWorkdir.toLowerCase() !== 'scratch'
+      && trimmedWorkdir.toLowerCase() !== 'workspace'
+      && !isPosixEphemeralTmp(trimmedWorkdir)
+    ) {
+      const verdict = classifyPath(trimmedWorkdir, cwd, prepared)
+      if (verdict) return verdict
+    }
   }
   if (typeof command !== 'string' || command.trim() === '') return null
 
-  if (TRAVERSAL.test(command)) {
+  const traversalMatch = TRAVERSAL.exec(command)
+  if (traversalMatch !== null) {
     return {
-      target: command.length > 220 ? `${command.slice(0, 220)}…` : command,
+      target: '..',
       real: '',
       why: 'shell-traversal',
       pathLike: false,
     }
   }
-  if (ENV_REFERENCE.test(command)) {
+  const envMatch = ENV_REFERENCE.exec(command)
+  if (envMatch !== null) {
     return {
-      target: command.length > 220 ? `${command.slice(0, 220)}…` : command,
+      target: envMatch[1].trim(),
       real: '',
       why: 'shell-environment',
       pathLike: false,
     }
   }
-  for (const token of collectAbsoluteTokens(command)) {
+  for (const token of collectAbsoluteTokens(command, cwd)) {
+    if (isBenignPseudoPath(token) || isPosixEphemeralTmp(token)) continue
+    const verdict = classifyPath(token, cwd, prepared)
+    if (verdict) return verdict
+  }
+  return null
+}
+
+const PYTHON_HOME_EXPANSION = /\b(os\.path\.expanduser|Path\.home\s*\()/
+
+export function classifyPython(args, cwd, roots) {
+  if (args === null || typeof args !== 'object') return null
+  const prepared = ensurePrepared(roots)
+  const workdir = typeof args.workdir === 'string' ? args.workdir.trim() : 'scratch'
+  if (
+    workdir !== ''
+    && workdir.toLowerCase() !== 'scratch'
+    && workdir.toLowerCase() !== 'workspace'
+    && !isPosixEphemeralTmp(workdir)
+  ) {
+    const verdict = classifyPath(workdir, cwd, prepared)
+    if (verdict) return verdict
+  }
+  const code = typeof args.code === 'string' ? args.code.trim() : ''
+  if (code === '') return null
+  if (TRAVERSAL.test(code)) {
+    return {
+      target: '..',
+      real: '',
+      why: 'shell-traversal',
+      pathLike: false,
+    }
+  }
+  const homeMatch = PYTHON_HOME_EXPANSION.exec(code)
+  if (homeMatch !== null || /(?:^|[\s"'`(=[,;|&])~[\\/]/.test(code)) {
+    return {
+      target: homeMatch !== null ? homeMatch[1] : '~',
+      real: '',
+      why: 'shell-environment',
+      pathLike: false,
+    }
+  }
+  for (const token of collectAbsoluteTokens(code, cwd)) {
+    if (isBenignPseudoPath(token) || isPosixEphemeralTmp(token)) continue
     const verdict = classifyPath(token, cwd, prepared)
     if (verdict) return verdict
   }
@@ -329,6 +472,7 @@ const TOOL_TEXT = {
   pwsh: { en: 'run a shell command', zh: '执行 shell 命令' },
   bash: { en: 'run a shell command', zh: '执行 shell 命令' },
   shell: { en: 'run a shell command', zh: '执行 shell 命令' },
+  python: { en: 'run a Python script', zh: '执行 Python 脚本' },
 }
 
 function summarize(tool, target, why, matched = null) {
@@ -382,6 +526,9 @@ export function classifyToolCall({
     if (!gateShell) return null
     if (args === null || typeof args !== 'object') return null
     verdict = classifyShell(args.command, cwd, prepared, args.workdir)
+  } else if (name === 'python') {
+    if (!gateShell) return null
+    verdict = classifyPython(args, cwd, prepared)
   } else {
     if (!gatePathTools) return null
     const keys = PATH_ARGS[name]
@@ -399,7 +546,9 @@ export function classifyToolCall({
   // only sees `D:\` cannot tell what is about to run.
   const command = SHELL_TOOLS.has(name) && args !== null && typeof args === 'object' && typeof args.command === 'string'
     ? args.command.trim()
-    : ''
+    : name === 'python' && args !== null && typeof args === 'object' && typeof args.description === 'string'
+      ? args.description.trim()
+      : ''
   const display = command === ''
     ? verdict.target
     : command.length > 240 ? `${command.slice(0, 240)}…` : command
